@@ -59,11 +59,8 @@ function setStatus(element, message, error = false) {
   element.classList.toggle('error', error);
 }
 
-function toggleFullscreen(stage, button, resetZoom) {
-  if (fullscreenReader.open) {
-    fullscreenReader.close();
-    return;
-  }
+function openFullscreen(stage, resetZoom) {
+  if (fullscreenReader.open) return;
   const anchor = document.createElement('div');
   anchor.style.height = `${stage.getBoundingClientRect().height}px`;
   stage.before(anchor);
@@ -79,7 +76,7 @@ function toggleFullscreen(stage, button, resetZoom) {
     if (document.fullscreenElement === stage) document.exitFullscreen().catch(() => {});
     resetZoom();
     anchor.replaceWith(stage);
-    button.focus({ preventScroll: true });
+    stage.focus({ preventScroll: true });
   }, { once: true });
   fullscreenReader.showModal();
   stage.querySelector('.fullscreen-grip').focus({ preventScroll: true });
@@ -87,11 +84,7 @@ function toggleFullscreen(stage, button, resetZoom) {
 }
 
 function installReaderZoom(stage, frame, book, cover, turn, redraw) {
-  const controls = stage.querySelector('.zoom-controls');
   const grip = stage.querySelector('.fullscreen-grip');
-  const zoomOut = controls.querySelector('[data-zoom="out"]');
-  const zoomReset = controls.querySelector('[data-zoom="reset"]');
-  const zoomIn = controls.querySelector('[data-zoom="in"]');
   const pointers = new Map();
   const maxScale = 4;
   let scale = 1;
@@ -111,9 +104,6 @@ function installReaderZoom(stage, frame, book, cover, turn, redraw) {
     frame.style.setProperty('--zoom-x', `${x}px`);
     frame.style.setProperty('--zoom-y', `${y}px`);
     frame.classList.toggle('is-zoomed', scale > 1);
-    zoomReset.textContent = `${Math.round(scale * 100)}%`;
-    zoomOut.disabled = zoomReset.disabled = scale === 1;
-    zoomIn.disabled = scale === maxScale;
   }
 
   function place(level, left, top) {
@@ -170,9 +160,6 @@ function installReaderZoom(stage, frame, book, cover, turn, redraw) {
     paint();
   }
 
-  zoomOut.addEventListener('click', () => changeScale(scale / 1.4));
-  zoomReset.addEventListener('click', reset);
-  zoomIn.addEventListener('click', () => changeScale(scale * 1.4));
   stage.addEventListener('keydown', event => {
     if (!isOpen() || event.ctrlKey || event.metaKey || event.altKey) return;
     if (!['+', '=', '-', '0'].includes(event.key)) return;
@@ -274,7 +261,6 @@ function createReader(entry, first) {
   const next = element.querySelector('.next');
   const book = element.querySelector('.book');
   const cover = element.querySelector('.reader-cover');
-  const screen = element.querySelector('.screen-control');
   const leaves = [...element.querySelectorAll('.book-page')];
   const sheet = element.querySelector('.book-turn');
   const front = element.querySelector('.book-front');
@@ -442,12 +428,17 @@ function createReader(entry, first) {
 
   previous.addEventListener('click', () => turn(-1));
   next.addEventListener('click', () => turn(1));
-  screen.addEventListener('click', () => toggleFullscreen(stage, screen, zoom.reset));
   frame.addEventListener('pointerdown', () => { ignoreCoverClick = zoom.isOpen(); });
   frame.addEventListener('click', () => {
-    if (!fullscreenReader.open && !ignoreCoverClick && (!cover.hidden || !book.hidden)) toggleFullscreen(stage, screen, zoom.reset);
+    if (!ignoreCoverClick && (!cover.hidden || !book.hidden)) openFullscreen(stage, zoom.reset);
   });
   stage.addEventListener('keydown', event => {
+    if (event.target === stage && !zoom.isOpen() && (event.key === 'Enter' || event.key === ' ')) {
+      if (cover.hidden && book.hidden) return;
+      event.preventDefault();
+      openFullscreen(stage, zoom.reset);
+      return;
+    }
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     turn(event.key === 'ArrowLeft' ? -1 : 1);

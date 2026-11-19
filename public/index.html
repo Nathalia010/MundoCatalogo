@@ -44,10 +44,10 @@
       <header class="reader-header d-flex justify-content-between align-items-center">
         <h2></h2>
       </header>
-      <div class="reader-stage" tabindex="0" role="group" aria-label="Libro digital. Desliza o usa las flechas del teclado para pasar la hoja.">
+      <div class="reader-stage" tabindex="0" role="group" aria-label="Libro digital. Usa las flechas para pasar la hoja y Enter para abrir a pantalla completa.">
         <div class="reader-top-actions">
           <button class="fullscreen-grip" type="button" aria-label="Salir de pantalla completa" title="Desliza hacia abajo para salir"><span aria-hidden="true"></span></button>
-          <a class="pdf-link btn button button-outline" target="_blank" rel="noopener" title="Abrir PDF"><span aria-hidden="true">📄</span></a>
+          <a class="pdf-link btn button" target="_blank" rel="noopener" title="Abrir PDF"><span aria-hidden="true">📄</span></a>
         </div>
         <button class="turn previous" type="button" aria-label="Página anterior" disabled><span aria-hidden="true"></span></button>
         <div class="page-frame">
@@ -59,17 +59,7 @@
           <p class="page-status" role="status">Cargando PDF…</p>
         </div>
         <button class="turn next" type="button" aria-label="Página siguiente" disabled><span aria-hidden="true"></span></button>
-        <div class="reader-footer">
-          <span class="page-number" role="status" aria-live="polite"></span>
-          <div class="reader-actions">
-            <div class="zoom-controls" role="group" aria-label="Zoom de la revista">
-              <button class="btn button" type="button" data-zoom="out" aria-label="Reducir zoom" disabled>−</button>
-              <button class="btn button" type="button" data-zoom="reset" aria-label="Restablecer zoom" disabled>100%</button>
-              <button class="btn button" type="button" data-zoom="in" aria-label="Aumentar zoom">+</button>
-            </div>
-            <button class="screen-control btn button button-text" type="button" aria-label="Pantalla completa" title="Pantalla completa"><span aria-hidden="true">⛶</span></button>
-          </div>
-        </div>
+        <span class="page-number" role="status" aria-live="polite"></span>
       </div>
     </article>
   </template>
