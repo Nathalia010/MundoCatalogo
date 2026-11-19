@@ -286,6 +286,11 @@ function createReader(entry, first) {
   let leafRatio;
   let spread = false;
   let renderedScale = 1;
+  let inView = false;
+  let readingDirection = 1;
+  let queuedTurn = 0;
+  let preloadTimer;
+  const preparedPages = new Map();
   const zoom = installReaderZoom(stage, frame, book, cover, turn, level => {
     if (level > renderedScale + 0.15 && !book.hidden && !activeDraw) drawPage();
   });
@@ -321,8 +326,38 @@ function createReader(entry, first) {
     back.replaceChildren();
   }
 
+  function cancelPaint(job) {
+    if (!job) return;
+    job.cancelled = true;
+    job.tasks.forEach(task => task.cancel());
+  }
+
+  function keepPrepared(numbers, width) {
+    for (const [number, job] of preparedPages) {
+      if (job.width === width && numbers.includes(number)) continue;
+      preparedPages.delete(number);
+      cancelPaint(job);
+    }
+  }
+
+  function prepareNeighbor(width) {
+    clearTimeout(preloadTimer);
+    if (!mobileReader.matches || !inView || document.hidden || zoom.scale !== 1 || book.hidden) return;
+    const destination = current + readingDirection;
+    if (destination < 1 || destination > pdfDocument.numPages || preparedPages.has(destination)) return;
+    preloadTimer = setTimeout(() => {
+      if (disposed || activeDraw || !inView || document.hidden || frame.clientWidth !== width) return;
+      const job = { width, tasks: [], zoom: 1 };
+      job.result = renderLeaf(destination, width, job);
+      preparedPages.set(destination, job);
+      job.result.catch(() => {
+        if (preparedPages.get(destination) === job) preparedPages.delete(destination);
+      });
+    }, 32);
+  }
+
   function stopDraw() {
-    activeDraw?.tasks.forEach(task => task.cancel());
+    cancelPaint(activeDraw);
     activeDraw = null;
     animation?.cancel();
     animation = null;
@@ -333,11 +368,12 @@ function createReader(entry, first) {
   async function renderLeaf(number, width, job) {
     if (number === null) return null;
     const page = await pdfDocument.getPage(number);
-    if (job !== activeDraw) return null;
+    if (job.cancelled) return null;
     const original = page.getViewport({ scale: 1 });
     const scale = Math.min(width / original.width, width / leafRatio / original.height);
     const viewport = page.getViewport({ scale });
-    const pixels = Math.min(Math.min(window.devicePixelRatio || 1, 2) * job.zoom, 4, 2400 / Math.max(viewport.width, viewport.height));
+    const ratio = Math.min(window.devicePixelRatio || 1, mobileReader.matches ? 1.5 : 2);
+    const pixels = Math.min(ratio * job.zoom, 4, 2400 / Math.max(viewport.width, viewport.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(viewport.width * pixels));
     canvas.height = Math.max(1, Math.round(viewport.height * pixels));
@@ -347,6 +383,15 @@ function createReader(entry, first) {
     job.tasks.push(task);
     await task.promise;
     return canvas;
+  }
+
+  async function getLeaf(number, width, job) {
+    const cached = job.zoom === 1 && preparedPages.get(number);
+    if (cached?.width === width) {
+      const canvas = await cached.result.catch(() => null);
+      if (canvas || job.cancelled) return canvas;
+    }
+    return renderLeaf(number, width, job);
   }
 
   async function flip(incoming, direction, twoPages) {
@@ -359,17 +404,20 @@ function createReader(entry, first) {
     putPage(back, twoPages ? incoming[opposite] : null);
     sheet.dataset.direction = direction > 0 ? 'next' : 'previous';
     sheet.hidden = false;
-    const angle = direction > 0 ? -180 : 180;
+    const quick = mobileReader.matches;
+    const angle = (direction > 0 ? -1 : 1) * (quick ? 105 : 180);
     animation = sheet.animate([
       { transform: 'rotateY(0deg)', opacity: 1 },
       { transform: `rotateY(${angle / 2}deg)`, opacity: 1, offset: 0.5 },
       { transform: `rotateY(${angle}deg)`, opacity: twoPages ? 1 : 0 },
-    ], { duration: 590, easing: 'cubic-bezier(.45,.08,.3,1)', fill: 'forwards' });
+    ], { duration: quick ? 230 : 590, easing: quick ? 'ease-out' : 'cubic-bezier(.45,.08,.3,1)', fill: 'forwards' });
     await animation.finished.catch(() => {});
   }
 
   async function drawPage(page = current, direction = 0) {
     if (!pdfDocument || !leafRatio || disposed || frame.clientWidth === 0) return;
+    const oldWidth = lastWidth;
+    clearTimeout(preloadTimer);
     stopDraw();
     lastWidth = frame.clientWidth;
     const twoPages = !mobileReader.matches && lastWidth >= 560 && leafRatio <= 1.15 && pdfDocument.numPages > 1;
@@ -378,16 +426,22 @@ function createReader(entry, first) {
     const columns = twoPages ? 2 : 1;
     const maxWidth = mobileReader.matches ? lastWidth : 720 * leafRatio * columns;
     const width = Math.min(lastWidth, maxWidth) / columns;
+    const prepare = mobileReader.matches;
+    keepPrepared(prepare ? [start - 1, start, start + 1] : [], width);
     const job = { tasks: [], zoom: zoom.scale };
     activeDraw = job;
     book.setAttribute('aria-busy', 'true');
     try {
-      const incoming = await Promise.all(numbers.map(number => renderLeaf(number, width, job)));
+      const incoming = await Promise.all(numbers.map(number => getLeaf(number, width, job)));
       if (job !== activeDraw) return;
       if (direction && twoPages === spread && !book.hidden && !reducedMotion.matches) {
         await flip(incoming, direction, twoPages);
         if (job !== activeDraw) return;
       }
+      if (prepare && !spread && direction && oldWidth === lastWidth && renderedScale === 1 && visiblePages[0]) {
+        preparedPages.set(current, { width, tasks: [], result: Promise.resolve(visiblePages[0]) });
+      }
+      preparedPages.delete(start);
       current = start;
       spread = twoPages;
       renderedScale = job.zoom;
@@ -416,15 +470,26 @@ function createReader(entry, first) {
       if (job === activeDraw || !activeDraw) {
         activeDraw = null;
         book.removeAttribute('aria-busy');
+        if (queuedTurn) {
+          const pending = queuedTurn;
+          queuedTurn = 0;
+          turn(pending);
+        }
+        if (!activeDraw) prepareNeighbor(frame.clientWidth);
       }
     }
   }
 
   function turn(direction) {
-    if (!pdfDocument || book.hidden || activeDraw) return;
+    if (!pdfDocument || book.hidden) return;
+    if (activeDraw) {
+      if (mobileReader.matches) queuedTurn = direction;
+      return;
+    }
     const step = spread && current >= (direction > 0 ? 2 : 4) ? 2 : 1;
     const destination = current + step * direction;
     if (destination < 1 || destination > pdfDocument.numPages) return;
+    readingDirection = direction;
     if (zoom.scale > 1) zoom.reset();
     drawPage(destination, direction);
   }
@@ -464,7 +529,9 @@ function createReader(entry, first) {
   function openPdf() {
     pdfReady ??= getPdfModule().then(({ getDocument }) => {
       if (disposed) return null;
-      loadingTask = getDocument({ ...pdfOptions, url: entry.url, disableStream: true, disableAutoFetch: true, rangeChunkSize: 256 * 1024 });
+      loadingTask = getDocument({ ...pdfOptions, url: entry.url, disableStream: true, disableAutoFetch: true, rangeChunkSize: 256 * 1024,
+        ...(mobileReader.matches ? { canvasMaxAreaInBytes: 16 * 1024 * 1024 } : {}),
+      });
       return loadingTask.promise;
     });
     return pdfReady;
@@ -512,6 +579,16 @@ function createReader(entry, first) {
     load();
   }, { rootMargin: '75px' });
   visibility.observe(element);
+  const readingVisibility = new IntersectionObserver(([item]) => {
+    const bookHeight = Math.min(frame.clientHeight, window.innerHeight);
+    inView = item.intersectionRect.height >= bookHeight * 0.35 && item.isIntersecting;
+    if (inView) prepareNeighbor(frame.clientWidth);
+    else {
+      clearTimeout(preloadTimer);
+      keepPrepared([], 0);
+    }
+  }, { threshold: [0, 0.25, 0.5] });
+  readingVisibility.observe(frame);
 
   if (entry.cover) {
     cover.alt = `Portada de ${entry.title}`;
@@ -532,7 +609,10 @@ function createReader(entry, first) {
     zoom.reset();
     if (fullscreenReader.contains(stage)) fullscreenReader.close();
     visibility.disconnect();
+    readingVisibility.disconnect();
     resizing.disconnect();
+    clearTimeout(preloadTimer);
+    keepPrepared([], 0);
     stopDraw();
     loadingTask?.destroy().catch(() => {});
     element.remove();
