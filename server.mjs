@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomBytes, randomUUID, scrypt as deriveKey, timingSafeEqual } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
+import { Worker } from 'node:worker_threads';
 
 const scrypt = promisify(deriveKey);
 const storage = resolve(process.env.DATA_DIR || 'data');
@@ -27,6 +28,36 @@ try {
 } catch (error) {
   if (error.code !== 'ENOENT') throw error;
   catalogs = [];
+}
+
+const availableCovers = new Set((await readdir(files)).filter(name => name.endsWith('.webp')).map(name => name.slice(0, -5)));
+let pendingCover = Promise.resolve();
+
+function renderCover(path) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./cover.mjs', import.meta.url), { workerData: path });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', code => reject(new Error(`La portada no está disponible (código ${code}).`)));
+  });
+}
+
+function queueCover(key) {
+  pendingCover = pendingCover.then(async () => {
+    if (availableCovers.has(key) || !catalogs.some(entry => entry.key === key)) return;
+    const temp = join(files, `${key}.cover`);
+    try {
+      const data = await renderCover(join(files, `${key}.pdf`));
+      if (!catalogs.some(entry => entry.key === key)) return;
+      await writeFile(temp, data);
+      await rename(temp, join(files, `${key}.webp`));
+      if (catalogs.some(entry => entry.key === key)) availableCovers.add(key);
+      else await unlink(join(files, `${key}.webp`)).catch(() => {});
+    } catch (error) {
+      console.warn(`No se pudo generar una portada: ${error.message}`);
+      await unlink(temp).catch(() => {});
+    }
+  });
 }
 
 const sessions = new Map();
@@ -52,7 +83,11 @@ function updateCatalogs(change) {
       throw error;
     }
     catalogs = entries;
-    if (replaced) await unlink(join(files, `${replaced.key}.pdf`)).catch(() => {});
+    if (replaced) {
+      availableCovers.delete(replaced.key);
+      await Promise.all(['pdf', 'webp'].map(extension => unlink(join(files, `${replaced.key}.${extension}`)).catch(() => {})));
+    }
+    if (added) queueCover(added.key);
     return entries;
   });
   pendingUpdate = next.catch(() => {});
@@ -126,11 +161,11 @@ const assets = new Map([
   ['/pdfjs/pdf.worker.mjs', ['node_modules/pdfjs-dist/build/pdf.worker.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
-async function streamFile(req, res, path, type, pdf = false) {
+async function streamFile(req, res, path, type, pdf = false, cacheControl = 'no-cache') {
   const { size } = await stat(path);
   let start = 0;
   let end = size - 1;
-  const headers = { 'Content-Type': type, 'Cache-Control': 'no-cache' };
+  const headers = { 'Content-Type': type, 'Cache-Control': cacheControl };
   const range = pdf && req.headers.range;
   if (pdf) headers['Accept-Ranges'] = 'bytes';
   if (range) {
@@ -157,7 +192,10 @@ async function streamFile(req, res, path, type, pdf = false) {
 }
 
 function publicEntries(entries) {
-  return entries.map(({ id, title, key }) => ({ id, title, url: `/catalogos/${key}.pdf` }));
+  return entries.map(({ id, title, key }) => ({
+    id, title, url: `/catalogos/${key}.pdf`,
+    cover: availableCovers.has(key) ? `/catalogos/${key}.webp` : null,
+  }));
 }
 
 async function handle(req, res) {
@@ -176,6 +214,10 @@ async function handle(req, res) {
   const pdf = /^\/catalogos\/([a-f0-9-]{36})\.pdf$/.exec(pathname);
   if (isRead && pdf && catalogs.some(entry => entry.key === pdf[1])) {
     return streamFile(req, res, join(files, `${pdf[1]}.pdf`), 'application/pdf', true);
+  }
+  const cover = /^\/catalogos\/([a-f0-9-]{36})\.webp$/.exec(pathname);
+  if (isRead && cover && availableCovers.has(cover[1]) && catalogs.some(entry => entry.key === cover[1])) {
+    return streamFile(req, res, join(files, `${cover[1]}.webp`), 'image/webp', false, 'public, max-age=86400');
   }
   if (method === 'GET' && pathname === '/api/session') return sendJson(res, 200, { signedIn });
   if (method === 'GET' && pathname === '/api/catalogos') return sendJson(res, 200, publicEntries(catalogs));
@@ -268,4 +310,7 @@ createServer((req, res) => {
     if (status === 500) console.error(error);
     sendJson(res, status, { error: error.status ? error.message : status === 404 ? 'Archivo no disponible.' : 'Ocurrió un error. Vuelve a intentarlo.' });
   });
-}).listen(port, host, () => console.log(`Mundo Catálogo · http://${host}:${port}`));
+}).listen(port, host, () => {
+  console.log(`Mundo Catálogo · http://${host}:${port}`);
+  catalogs.forEach(({ key }) => queueCover(key));
+});

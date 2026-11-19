@@ -6,6 +6,7 @@ const adminStatus = $('#admin-status');
 const sessionButton = $('#session-button');
 const sessionLabel = $('#session-label');
 const mobileReader = matchMedia('(max-width: 767.98px)');
+const fullscreenReader = $('#fullscreen-reader');
 const loginDialog = $('#login-dialog');
 const loginForm = $('#login-form');
 const uploadDialog = $('#upload-dialog');
@@ -58,7 +59,39 @@ function setStatus(element, message, error = false) {
   element.classList.toggle('error', error);
 }
 
-function createReader(entry) {
+function toggleFullscreen(stage, button) {
+  if (fullscreenReader.open) {
+    fullscreenReader.close();
+    return;
+  }
+  const anchor = document.createElement('div');
+  anchor.style.height = `${stage.getBoundingClientRect().height}px`;
+  stage.before(anchor);
+  fullscreenReader.append(stage);
+  button.setAttribute('aria-label', 'Salir de pantalla completa');
+  button.title = 'Salir de pantalla completa';
+  button.firstElementChild.textContent = '×';
+  let nativeFullscreen = false;
+  const events = new AbortController();
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === stage) nativeFullscreen = true;
+    else if (nativeFullscreen && fullscreenReader.open) fullscreenReader.close();
+  }, { signal: events.signal });
+  fullscreenReader.addEventListener('close', () => {
+    events.abort();
+    if (document.fullscreenElement === stage) document.exitFullscreen().catch(() => {});
+    anchor.replaceWith(stage);
+    button.setAttribute('aria-label', 'Pantalla completa');
+    button.title = 'Pantalla completa';
+    button.firstElementChild.textContent = '⛶';
+    button.focus({ preventScroll: true });
+  }, { once: true });
+  fullscreenReader.showModal();
+  button.focus({ preventScroll: true });
+  if (document.fullscreenEnabled) stage.requestFullscreen?.().catch(() => {});
+}
+
+function createReader(entry, first) {
   const element = $('#reader-template').content.firstElementChild.cloneNode(true);
   element.setAttribute('aria-label', entry.title);
   element.querySelector('h2').textContent = entry.title;
@@ -70,6 +103,8 @@ function createReader(entry) {
   const previous = element.querySelector('.previous');
   const next = element.querySelector('.next');
   const book = element.querySelector('.book');
+  const cover = element.querySelector('.reader-cover');
+  const screen = element.querySelector('.screen-control');
   const leaves = [...element.querySelectorAll('.book-page')];
   const sheet = element.querySelector('.book-turn');
   const front = element.querySelector('.book-front');
@@ -86,6 +121,7 @@ function createReader(entry) {
   let activeDraw;
   let animation;
   let gesture;
+  let ignoreCoverClick = false;
   let disposed = false;
   let lastWidth;
   let leafRatio;
@@ -199,6 +235,7 @@ function createReader(entry) {
       book.style.setProperty('--book-max-width', `${maxWidth}px`);
       showLeaves(incoming);
       book.hidden = false;
+      cover.hidden = true;
       status.hidden = true;
       const end = Math.max(...numbers);
       counter.textContent = end > start ? `Páginas ${start}–${end} de ${pdfDocument.numPages}` : `Página ${start} de ${pdfDocument.numPages}`;
@@ -228,6 +265,11 @@ function createReader(entry) {
 
   previous.addEventListener('click', () => turn(-1));
   next.addEventListener('click', () => turn(1));
+  screen.addEventListener('click', () => toggleFullscreen(stage, screen));
+  frame.addEventListener('pointerdown', () => { ignoreCoverClick = false; });
+  frame.addEventListener('click', () => {
+    if (!fullscreenReader.open && !ignoreCoverClick && (!cover.hidden || !book.hidden)) toggleFullscreen(stage, screen);
+  });
   stage.addEventListener('keydown', event => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -243,6 +285,7 @@ function createReader(entry) {
     const dx = event.clientX - gesture.x;
     const dy = event.clientY - gesture.y;
     gesture = null;
+    ignoreCoverClick = Math.hypot(dx, dy) > 10;
     if (Math.abs(dx) >= 32 && Math.abs(dx) > Math.abs(dy) * 1.25) turn(dx < 0 ? 1 : -1);
   });
   book.addEventListener('lostpointercapture', () => { gesture = null; });
@@ -250,7 +293,7 @@ function createReader(entry) {
   function openPdf() {
     pdfReady ??= getPdfModule().then(({ getDocument }) => {
       if (disposed) return null;
-      loadingTask = getDocument({ ...pdfOptions, url: entry.url, disableStream: true, disableAutoFetch: true });
+      loadingTask = getDocument({ ...pdfOptions, url: entry.url, disableStream: true, disableAutoFetch: true, rangeChunkSize: 256 * 1024 });
       return loadingTask.promise;
     });
     return pdfReady;
@@ -282,6 +325,7 @@ function createReader(entry) {
       resizing.observe(frame);
     } catch (error) {
       if (disposed) return;
+      status.hidden = false;
       setStatus(status, error.name === 'PasswordException' ? 'El PDF está protegido con contraseña.' : 'No pudimos abrir este PDF.', true);
     }
   }
@@ -292,15 +336,28 @@ function createReader(entry) {
   const visibility = new IntersectionObserver(visible => {
     if (!visible.some(item => item.isIntersecting)) return;
     visibility.disconnect();
+    if (entry.cover && !cover.hasAttribute('src')) cover.src = entry.cover;
     load();
-  }, { rootMargin: '500px' });
+  }, { rootMargin: '75px' });
   visibility.observe(element);
+
+  if (entry.cover) {
+    cover.alt = `Portada de ${entry.title}`;
+    cover.fetchPriority = first ? 'high' : 'low';
+    cover.addEventListener('load', () => {
+      if (disposed || !book.hidden) return;
+      cover.hidden = false;
+      status.hidden = true;
+    }, { once: true });
+    if (first) cover.src = entry.cover;
+  }
 
   return { element, getThumbnail() {
     thumbnailReady ??= drawThumbnail().catch(() => null);
     return thumbnailReady;
   }, dispose() {
     disposed = true;
+    if (fullscreenReader.contains(stage)) fullscreenReader.close();
     visibility.disconnect();
     resizing.disconnect();
     stopDraw();
@@ -324,7 +381,7 @@ function renderPublic() {
   }
   catalogs.querySelector('.empty, .initial-status')?.remove();
   entries.forEach((entry, index) => {
-    if (!readers.has(entry.url)) readers.set(entry.url, createReader(entry));
+    if (!readers.has(entry.url)) readers.set(entry.url, createReader(entry, index === 0));
     const { element } = readers.get(entry.url);
     const atPosition = catalogs.children[index];
     if (element !== atPosition) catalogs.insertBefore(element, atPosition || null);
