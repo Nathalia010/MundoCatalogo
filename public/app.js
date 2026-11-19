@@ -59,7 +59,7 @@ function setStatus(element, message, error = false) {
   element.classList.toggle('error', error);
 }
 
-function toggleFullscreen(stage, button) {
+function toggleFullscreen(stage, button, resetZoom) {
   if (fullscreenReader.open) {
     fullscreenReader.close();
     return;
@@ -68,9 +68,6 @@ function toggleFullscreen(stage, button) {
   anchor.style.height = `${stage.getBoundingClientRect().height}px`;
   stage.before(anchor);
   fullscreenReader.append(stage);
-  button.setAttribute('aria-label', 'Salir de pantalla completa');
-  button.title = 'Salir de pantalla completa';
-  button.firstElementChild.textContent = '×';
   let nativeFullscreen = false;
   const events = new AbortController();
   document.addEventListener('fullscreenchange', () => {
@@ -80,15 +77,188 @@ function toggleFullscreen(stage, button) {
   fullscreenReader.addEventListener('close', () => {
     events.abort();
     if (document.fullscreenElement === stage) document.exitFullscreen().catch(() => {});
+    resetZoom();
     anchor.replaceWith(stage);
-    button.setAttribute('aria-label', 'Pantalla completa');
-    button.title = 'Pantalla completa';
-    button.firstElementChild.textContent = '⛶';
     button.focus({ preventScroll: true });
   }, { once: true });
   fullscreenReader.showModal();
-  button.focus({ preventScroll: true });
+  stage.querySelector('.fullscreen-grip').focus({ preventScroll: true });
   if (document.fullscreenEnabled) stage.requestFullscreen?.().catch(() => {});
+}
+
+function installReaderZoom(stage, frame, book, cover, turn, redraw) {
+  const controls = stage.querySelector('.zoom-controls');
+  const grip = stage.querySelector('.fullscreen-grip');
+  const zoomOut = controls.querySelector('[data-zoom="out"]');
+  const zoomReset = controls.querySelector('[data-zoom="reset"]');
+  const zoomIn = controls.querySelector('[data-zoom="in"]');
+  const pointers = new Map();
+  const maxScale = 4;
+  let scale = 1;
+  let x = 0;
+  let y = 0;
+  let press;
+  let lastTap;
+  let detailTimer;
+  let gripPress;
+
+  const isOpen = () => fullscreenReader.open && fullscreenReader.contains(stage);
+  const page = () => !book.hidden ? book : !cover.hidden ? cover : null;
+  const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
+
+  function paint() {
+    frame.style.setProperty('--zoom-scale', String(scale));
+    frame.style.setProperty('--zoom-x', `${x}px`);
+    frame.style.setProperty('--zoom-y', `${y}px`);
+    frame.classList.toggle('is-zoomed', scale > 1);
+    zoomReset.textContent = `${Math.round(scale * 100)}%`;
+    zoomOut.disabled = zoomReset.disabled = scale === 1;
+    zoomIn.disabled = scale === maxScale;
+  }
+
+  function place(level, left, top) {
+    const content = page();
+    if (!content) return;
+    if (level === 1) {
+      scale = 1;
+      x = y = 0;
+      paint();
+      return;
+    }
+    const viewport = frame.getBoundingClientRect();
+    const rect = content.getBoundingClientRect();
+    const limit = (offset, origin, size, start, end) => {
+      const near = start - origin;
+      const far = end - origin - size;
+      return clamp(offset, Math.min(near, far), Math.max(near, far));
+    };
+    x = limit(left, rect.left - x, rect.width / scale * level, viewport.left, viewport.right);
+    y = limit(top, rect.top - y, rect.height / scale * level, viewport.top, viewport.bottom);
+    scale = level;
+    paint();
+  }
+
+  function zoomAt(level, from, to = from) {
+    const content = page();
+    if (!content) return;
+    const rect = content.getBoundingClientRect();
+    const target = clamp(level, 1, maxScale);
+    const factor = target / scale;
+    place(target, x + (to.x - rect.left) - (from.x - rect.left) * factor,
+      y + (to.y - rect.top) - (from.y - rect.top) * factor);
+  }
+
+  function scheduleDetail() {
+    clearTimeout(detailTimer);
+    detailTimer = setTimeout(() => {
+      if (isOpen()) redraw(scale);
+    }, 140);
+  }
+
+  function changeScale(level) {
+    const viewport = frame.getBoundingClientRect();
+    zoomAt(level, { x: (viewport.left + viewport.right) / 2, y: (viewport.top + viewport.bottom) / 2 });
+    scheduleDetail();
+  }
+
+  function reset() {
+    clearTimeout(detailTimer);
+    pointers.clear();
+    press = lastTap = null;
+    scale = 1;
+    x = y = 0;
+    paint();
+  }
+
+  zoomOut.addEventListener('click', () => changeScale(scale / 1.4));
+  zoomReset.addEventListener('click', reset);
+  zoomIn.addEventListener('click', () => changeScale(scale * 1.4));
+  stage.addEventListener('keydown', event => {
+    if (!isOpen() || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!['+', '=', '-', '0'].includes(event.key)) return;
+    event.preventDefault();
+    changeScale(event.key === '0' ? 1 : event.key === '-' ? scale / 1.4 : scale * 1.4);
+  });
+  frame.addEventListener('wheel', event => {
+    if (!isOpen() || !page() || !event.deltaY) return;
+    event.preventDefault();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.clientHeight : 1);
+    zoomAt(scale * Math.exp(-delta / 360), { x: event.clientX, y: event.clientY });
+    scheduleDetail();
+  }, { passive: false });
+
+  const position = event => ({ x: event.clientX, y: event.clientY });
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const midpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const swipedDown = (dx, dy) => dy >= 60 && dy > Math.abs(dx) * 1.3;
+
+  grip.addEventListener('click', () => { if (isOpen()) fullscreenReader.close(); });
+  grip.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    gripPress = { id: event.pointerId, ...position(event) };
+    grip.setPointerCapture(event.pointerId);
+  });
+  grip.addEventListener('pointerup', event => {
+    if (gripPress?.id !== event.pointerId) return;
+    const down = swipedDown(event.clientX - gripPress.x, event.clientY - gripPress.y);
+    gripPress = null;
+    if (down && isOpen()) fullscreenReader.close();
+  });
+  grip.addEventListener('lostpointercapture', () => { gripPress = null; });
+
+  frame.addEventListener('pointerdown', event => {
+    if (!isOpen() || !page() || event.button !== 0 || pointers.size >= 2) return;
+    const point = position(event);
+    pointers.set(event.pointerId, point);
+    frame.setPointerCapture(event.pointerId);
+    if (pointers.size === 1) press = { point, canTurn: scale === 1, canTap: true };
+    else press = lastTap = null;
+  });
+
+  frame.addEventListener('pointermove', event => {
+    const previous = pointers.get(event.pointerId);
+    if (!previous) return;
+    const point = position(event);
+    pointers.set(event.pointerId, point);
+    if (pointers.size === 2) {
+      const other = [...pointers.values()].find(value => value !== point);
+      const before = Math.max(12, distance(previous, other));
+      const after = Math.max(12, distance(point, other));
+      zoomAt(scale * after / before, midpoint(previous, other), midpoint(point, other));
+    } else if (scale > 1) place(scale, x + point.x - previous.x, y + point.y - previous.y);
+  });
+
+  function endPointer(event) {
+    if (!pointers.delete(event.pointerId)) return;
+    if (pointers.size) {
+      press = { point: pointers.values().next().value, canTurn: false, canTap: false };
+      return;
+    }
+    if (event.type === 'pointerup' && press) {
+      const point = position(event);
+      const dx = point.x - press.point.x;
+      const dy = point.y - press.point.y;
+      if (press.canTurn && scale === 1 && swipedDown(dx, dy)) {
+        fullscreenReader.close();
+      } else if (press.canTurn && scale === 1 && Math.abs(dx) >= 32 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        turn(dx < 0 ? 1 : -1);
+      } else if (press.canTap && distance(point, press.point) < 12) {
+        const time = performance.now();
+        if (lastTap && time - lastTap.time < 320 && distance(lastTap.point, point) < 34) {
+          zoomAt(scale > 1 ? 1 : 2.5, point);
+          lastTap = null;
+        } else lastTap = { time, point };
+      } else lastTap = null;
+    }
+    press = null;
+    scheduleDetail();
+  }
+
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    frame.addEventListener(type, endPointer);
+  }
+
+  return { isOpen, reset, get scale() { return scale; }, fit() { if (scale > 1) place(scale, x, y); } };
 }
 
 function createReader(entry, first) {
@@ -126,6 +296,10 @@ function createReader(entry, first) {
   let lastWidth;
   let leafRatio;
   let spread = false;
+  let renderedScale = 1;
+  const zoom = installReaderZoom(stage, frame, book, cover, turn, level => {
+    if (level > renderedScale + 0.15 && !book.hidden && !activeDraw) drawPage();
+  });
 
   function spreadStart(page, twoPages) {
     return twoPages && page > 1 ? page - page % 2 : page;
@@ -174,7 +348,7 @@ function createReader(entry, first) {
     const original = page.getViewport({ scale: 1 });
     const scale = Math.min(width / original.width, width / leafRatio / original.height);
     const viewport = page.getViewport({ scale });
-    const pixels = Math.min(window.devicePixelRatio || 1, 2);
+    const pixels = Math.min(Math.min(window.devicePixelRatio || 1, 2) * job.zoom, 4, 2400 / Math.max(viewport.width, viewport.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(viewport.width * pixels));
     canvas.height = Math.max(1, Math.round(viewport.height * pixels));
@@ -215,7 +389,7 @@ function createReader(entry, first) {
     const columns = twoPages ? 2 : 1;
     const maxWidth = mobileReader.matches ? lastWidth : 720 * leafRatio * columns;
     const width = Math.min(lastWidth, maxWidth) / columns;
-    const job = { tasks: [] };
+    const job = { tasks: [], zoom: zoom.scale };
     activeDraw = job;
     book.setAttribute('aria-busy', 'true');
     try {
@@ -227,6 +401,7 @@ function createReader(entry, first) {
       }
       current = start;
       spread = twoPages;
+      renderedScale = job.zoom;
       animation?.cancel();
       animation = null;
       clearSheet();
@@ -237,6 +412,7 @@ function createReader(entry, first) {
       book.hidden = false;
       cover.hidden = true;
       status.hidden = true;
+      zoom.fit();
       const end = Math.max(...numbers);
       counter.textContent = end > start ? `Páginas ${start}–${end} de ${pdfDocument.numPages}` : `Página ${start} de ${pdfDocument.numPages}`;
       const focused = document.activeElement;
@@ -260,15 +436,16 @@ function createReader(entry, first) {
     const step = spread && current >= (direction > 0 ? 2 : 4) ? 2 : 1;
     const destination = current + step * direction;
     if (destination < 1 || destination > pdfDocument.numPages) return;
+    if (zoom.scale > 1) zoom.reset();
     drawPage(destination, direction);
   }
 
   previous.addEventListener('click', () => turn(-1));
   next.addEventListener('click', () => turn(1));
-  screen.addEventListener('click', () => toggleFullscreen(stage, screen));
-  frame.addEventListener('pointerdown', () => { ignoreCoverClick = false; });
+  screen.addEventListener('click', () => toggleFullscreen(stage, screen, zoom.reset));
+  frame.addEventListener('pointerdown', () => { ignoreCoverClick = zoom.isOpen(); });
   frame.addEventListener('click', () => {
-    if (!fullscreenReader.open && !ignoreCoverClick && (!cover.hidden || !book.hidden)) toggleFullscreen(stage, screen);
+    if (!fullscreenReader.open && !ignoreCoverClick && (!cover.hidden || !book.hidden)) toggleFullscreen(stage, screen, zoom.reset);
   });
   stage.addEventListener('keydown', event => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -276,7 +453,7 @@ function createReader(entry, first) {
     turn(event.key === 'ArrowLeft' ? -1 : 1);
   });
   book.addEventListener('pointerdown', event => {
-    if (!event.isPrimary || event.button !== 0) return;
+    if (zoom.isOpen() || !event.isPrimary || event.button !== 0) return;
     gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
     book.setPointerCapture(event.pointerId);
   });
@@ -332,6 +509,7 @@ function createReader(entry, first) {
 
   const resizing = new ResizeObserver(() => {
     if (frame.clientWidth && frame.clientWidth !== lastWidth) drawPage();
+    else zoom.fit();
   });
   const visibility = new IntersectionObserver(visible => {
     if (!visible.some(item => item.isIntersecting)) return;
@@ -357,6 +535,7 @@ function createReader(entry, first) {
     return thumbnailReady;
   }, dispose() {
     disposed = true;
+    zoom.reset();
     if (fullscreenReader.contains(stage)) fullscreenReader.close();
     visibility.disconnect();
     resizing.disconnect();
