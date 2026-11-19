@@ -13,11 +13,14 @@ const uploadDialog = $('#upload-dialog');
 const uploadForm = $('#upload-form');
 const positionDialog = $('#position-dialog');
 const positionSelect = $('#position-select');
+const removeDialog = $('#remove-dialog');
+const removeForm = $('#remove-form');
 const readers = new Map();
 let entries = [];
 let signedIn = false;
 let listLoaded = false;
 let replacing = null;
+let removing = null;
 let pdfModule;
 let thumbnailObserver;
 let positioning;
@@ -634,7 +637,11 @@ function renderAdmin() {
     view.rel = 'noopener';
     view.textContent = 'Ver PDF';
     view.setAttribute('aria-label', `Ver PDF de ${entry.title} en otra pestaña`);
-    actions.append(replace, view);
+    const remove = rowButton('×', 'outline', () => showRemove(entry));
+    remove.classList.add('remove-pdf');
+    remove.title = 'Quitar PDF';
+    remove.setAttribute('aria-label', `Quitar PDF de ${entry.title}`);
+    actions.append(replace, view, remove);
     row.append(handle, label, actions);
     adminList.append(row);
     thumbnailObserver.observe(thumbnail);
@@ -794,12 +801,43 @@ function showUpload(entry = null) {
   uploadDialog.showModal();
 }
 
+function showRemove(entry) {
+  removing = entry;
+  $('#remove-description').textContent = `¿Quitar «${entry.title}» de Mundo Catálogo?`;
+  setStatus(removeForm.querySelector('.form-status'), '');
+  removeDialog.showModal();
+}
+
+$('#cancel-remove').addEventListener('click', () => removeDialog.close());
+removeForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const entry = removing;
+  const status = removeForm.querySelector('.form-status');
+  showBusy(removeForm, true);
+  setStatus(status, 'Quitando PDF…');
+  try {
+    const data = await request(`/api/catalogos/${entry.id}`, { method: 'DELETE', headers: { 'If-Match': `"${entry.url}"` } });
+    removeDialog.close();
+    updateEntries(data);
+    setStatus(adminStatus, 'PDF quitado.');
+    $('#add').focus({ preventScroll: true });
+  } catch (error) {
+    setStatus(status, error.message, true);
+    if (error.status === 401) {
+      removeDialog.close();
+      sessionExpired();
+    }
+  } finally {
+    showBusy(removeForm, false);
+  }
+});
+
 function showBusy(form, busy) {
   form.querySelectorAll('button, input').forEach(input => { input.disabled = busy; });
   form.setAttribute('aria-busy', String(busy));
 }
 
-for (const dialog of [loginDialog, uploadDialog, positionDialog]) {
+for (const dialog of [loginDialog, uploadDialog, positionDialog, removeDialog]) {
   dialog.querySelector('.close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('cancel', event => {
     if (dialog.querySelector('form').getAttribute('aria-busy') === 'true') event.preventDefault();

@@ -71,7 +71,7 @@ setInterval(() => {
 let pendingUpdate = Promise.resolve();
 function updateCatalogs(change) {
   const next = pendingUpdate.then(async () => {
-    const { entries, added, replaced } = change(catalogs);
+    const { entries, added, removed } = change(catalogs);
     const temp = join(storage, `${randomUUID()}.tmp`);
     try {
       if (added) await rename(added.stagedPath, join(files, `${added.key}.pdf`));
@@ -83,9 +83,9 @@ function updateCatalogs(change) {
       throw error;
     }
     catalogs = entries;
-    if (replaced) {
-      availableCovers.delete(replaced.key);
-      await Promise.all(['pdf', 'webp'].map(extension => unlink(join(files, `${replaced.key}.${extension}`)).catch(() => {})));
+    if (removed) {
+      availableCovers.delete(removed.key);
+      await Promise.all(['pdf', 'webp'].map(extension => unlink(join(files, `${removed.key}.${extension}`)).catch(() => {})));
     }
     if (added) queueCover(added.key);
     return entries;
@@ -266,8 +266,20 @@ async function handle(req, res) {
     return sendJson(res, 200, publicEntries(entries));
   }
 
-  const replacement = /^\/api\/catalogos\/([a-f0-9-]{36})$/.exec(pathname);
-  if ((method === 'POST' && pathname === '/api/catalogos') || (method === 'PUT' && replacement)) {
+  const singleCatalog = /^\/api\/catalogos\/([a-f0-9-]{36})$/.exec(pathname);
+  const catalogId = singleCatalog?.[1];
+  if (method === 'DELETE' && catalogId) {
+    const entries = await updateCatalogs(current => {
+      const existing = current.find(entry => entry.id === catalogId);
+      if (!existing) throw new HttpError(404, 'Este catálogo ya no está disponible.');
+      if (req.headers['if-match'] !== `"/catalogos/${existing.key}.pdf"`) {
+        throw new HttpError(409, 'El PDF cambió. Actualiza la página antes de quitarlo.');
+      }
+      return { entries: current.filter(entry => entry.id !== catalogId), removed: existing };
+    });
+    return sendJson(res, 200, publicEntries(entries));
+  }
+  if ((method === 'POST' && pathname === '/api/catalogos') || (method === 'PUT' && catalogId)) {
     if (req.headers['content-type'] !== 'application/pdf') throw new HttpError(415, 'Selecciona un archivo PDF.');
     let title;
     try {
@@ -280,16 +292,16 @@ async function handle(req, res) {
     try {
       await stagePdf(req, stagedPath);
       const entries = await updateCatalogs(current => {
-        const existing = replacement && current.find(entry => entry.id === replacement[1]);
-        if (replacement && !existing) throw new HttpError(404, 'Este catálogo ya no está disponible.');
+        const existing = catalogId && current.find(entry => entry.id === catalogId);
+        if (catalogId && !existing) throw new HttpError(404, 'Este catálogo ya no está disponible.');
         const entry = { id: existing?.id || randomUUID(), key, title: title || existing?.title || 'Catálogo' };
         return {
           entries: existing ? current.map(item => item.id === entry.id ? entry : item) : [...current, entry],
           added: { key, stagedPath },
-          replaced: existing,
+          removed: existing,
         };
       });
-      return sendJson(res, replacement ? 200 : 201, publicEntries(entries));
+      return sendJson(res, catalogId ? 200 : 201, publicEntries(entries));
     } finally {
       await unlink(stagedPath).catch(() => {});
     }

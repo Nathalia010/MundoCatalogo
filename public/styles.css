@@ -65,11 +65,9 @@ h1, h2, p { margin: 0; }
 .reader-header h2 { font-size: 1.2rem; overflow-wrap: anywhere; }
 .reader-top-actions { position: absolute; inset: 8px 8px auto; z-index: 3; display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .reader-top-actions > * { pointer-events: auto; }
-.pdf-link { position: absolute; inset: 0 0 auto auto; display: grid; width: 44px; min-height: 44px; padding: 0; place-items: center; font-size: 1.15rem; text-decoration: none; border-color: #ffffff24; background: #15213d18; }
-.pdf-link span { opacity: .78; }
-.pdf-link:hover { border-color: #ffffff48; background: #15213d38; }
-.pdf-link:hover span, .pdf-link:focus-visible span { opacity: 1; }
-.fullscreen-grip { display: none; width: min(160px, 50%); height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; touch-action: none; }
+.pdf-link { position: absolute; inset: 0 0 auto auto; display: inline-flex; align-items: center; min-height: 44px; padding-inline: 11px; color: white; border-color: #ffffff24; background: #17223791; text-decoration: none; }
+.pdf-link:hover, .pdf-link:focus-visible { color: white; border-color: #ffffff48; background: #172237c2; }
+.fullscreen-grip { display: none; width: min(160px, 34%); height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; touch-action: none; }
 .fullscreen-grip span { display: block; width: 42px; height: 5px; border-radius: 8px; background: #c2cede; pointer-events: none; }
 .reader-stage { position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: center; gap: clamp(8px, 2vw, 22px); padding: 20px clamp(10px, 4vw, 45px); min-height: 240px; background: #e9eef7; outline-offset: -4px; }
 .page-frame { min-width: 0; display: grid; justify-items: center; gap: 10px; }
@@ -128,10 +126,16 @@ h1, h2, p { margin: 0; }
 .row-actions { gap: 6px; }
 .row-actions a { display: inline-flex; align-items: center; text-decoration: none; }
 .replace-pdf { min-width: 44px; padding-inline: 8px; font-size: 1.05rem; }
+.remove-pdf { min-width: 44px; padding: 0 8px; color: #a51d36; font-size: 1.45rem; line-height: 1; border-color: #f0d3db; }
+.remove-pdf:hover { color: #97162d; background: #fceef2; border-color: #eac3cd; }
+.button-danger { background: #a51d36; color: white; }
+.button-danger:hover { background: #801328; color: white; }
 .admin-status { margin-top: 12px; color: var(--muted); }
 dialog { width: min(440px, calc(100% - 30px)); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; color: inherit; box-shadow: 0 20px 70px #101b5245; }
 dialog::backdrop { background: #111c41a0; }
 .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; margin-top: 16px; }
+#remove-description { overflow-wrap: anywhere; }
 .close { width: 38px; height: 38px; flex: none; font-size: 1.45rem; color: var(--muted); background: #f2f4fa; border: 0; border-radius: 10px; }
 dialog label { display: block; margin: 12px 0 6px; font-size: .9rem; font-weight: 650; }
 dialog input, dialog select { width: 100%; border: 1px solid #ccd5e9; border-radius: 9px; padding: 10px; color: inherit; background-color: white; }
@@ -145,8 +149,8 @@ body:has(.fullscreen-reader[open]) { overflow: hidden; }
 .fullscreen-reader { width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: #172237; }
 .fullscreen-reader .reader-stage { width: 100%; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; padding-block: 54px 8px; background: #172237; }
 .fullscreen-reader .fullscreen-grip { display: grid; place-items: center; cursor: grab; }
-.fullscreen-reader .pdf-link { background: #ffffff1a; }
-.fullscreen-reader .pdf-link:hover { background: #ffffff32; }
+.fullscreen-reader .pdf-link { background: #ffffff18; }
+.fullscreen-reader .pdf-link:hover, .fullscreen-reader .pdf-link:focus-visible { background: #ffffff35; }
 .fullscreen-reader .page-frame { align-self: stretch; align-content: center; min-height: 0; overflow: clip; touch-action: none; }
 .fullscreen-reader .book { width: min(100%, var(--book-max-width), calc((100dvh - 118px) * var(--leaf-ratio) * var(--book-columns, 1))); }
 .fullscreen-reader .book.is-spread { --book-columns: 2; }
