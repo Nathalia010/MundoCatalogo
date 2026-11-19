@@ -1,6 +1,6 @@
 # Mundo Catálogo
 
-Página para consultar catálogos en PDF. Cada catálogo empieza en la primera página y tiene sus propios controles. Los siguientes catálogos aparecen al desplazarse hacia abajo.
+Página para consultar catálogos en PDF como libros digitales. Abre cada portada y pasa las hojas con los botones, las flechas del teclado o un gesto horizontal. Los catálogos verticales muestran dos páginas juntas cuando hay espacio. Los siguientes catálogos aparecen al desplazarse hacia abajo.
 
 ## Ejecutar en Windows
 

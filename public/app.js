@@ -66,69 +66,161 @@ function createReader(entry) {
   const frame = element.querySelector('.page-frame');
   const previous = element.querySelector('.previous');
   const next = element.querySelector('.next');
-  const canvas = element.querySelector('canvas');
+  const book = element.querySelector('.book');
+  const leaves = [...element.querySelectorAll('.book-page')];
+  const sheet = element.querySelector('.book-turn');
+  const front = element.querySelector('.book-front');
+  const back = element.querySelector('.book-back');
   const status = element.querySelector('.page-status');
   const counter = element.querySelector('.page-number');
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let loadingTask;
   let pdfReady;
   let pdfDocument;
   let thumbnailReady;
   let current = 1;
-  let revision = 0;
-  let renderTask;
+  let visiblePages = [null, null];
+  let activeDraw;
+  let animation;
+  let gesture;
   let disposed = false;
   let lastWidth;
+  let leafRatio;
+  let spread = false;
 
-  function updateControls() {
-    previous.disabled = !pdfDocument || current === 1;
-    next.disabled = !pdfDocument || current === pdfDocument.numPages;
+  function spreadStart(page, twoPages) {
+    return twoPages && page > 1 ? page - page % 2 : page;
   }
 
-  async function drawPage() {
-    if (!pdfDocument || disposed) return;
+  function pageSlots(page, twoPages) {
+    if (!twoPages) return [page, null];
+    if (page === 1) return [null, 1];
+    return [page, page < pdfDocument.numPages ? page + 1 : null];
+  }
+
+  function updateControls() {
+    const ready = !book.hidden;
+    previous.disabled = !ready || current === 1;
+    next.disabled = !ready || Math.max(...pageSlots(current, spread)) >= pdfDocument.numPages;
+  }
+
+  function putPage(slot, canvas) {
+    if (canvas) slot.replaceChildren(canvas);
+    else slot.replaceChildren();
+  }
+
+  function showLeaves(canvases) {
+    leaves.forEach((leaf, index) => putPage(leaf, canvases[index]));
+  }
+
+  function clearSheet() {
+    sheet.hidden = true;
+    front.replaceChildren();
+    back.replaceChildren();
+  }
+
+  function stopDraw() {
+    activeDraw?.tasks.forEach(task => task.cancel());
+    activeDraw = null;
+    animation?.cancel();
+    animation = null;
+    clearSheet();
+    showLeaves(visiblePages);
+  }
+
+  async function renderLeaf(number, width, job) {
+    if (number === null) return null;
+    const page = await pdfDocument.getPage(number);
+    if (job !== activeDraw) return null;
+    const original = page.getViewport({ scale: 1 });
+    const scale = Math.min(width / original.width, width / leafRatio / original.height);
+    const viewport = page.getViewport({ scale });
+    const pixels = Math.min(window.devicePixelRatio || 1, 2);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(viewport.width * pixels));
+    canvas.height = Math.max(1, Math.round(viewport.height * pixels));
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', `Página ${number} de ${entry.title}`);
+    const task = page.render({ canvas, viewport, transform: [pixels, 0, 0, pixels, 0, 0] });
+    job.tasks.push(task);
+    await task.promise;
+    return canvas;
+  }
+
+  async function flip(incoming, direction, twoPages) {
+    const turningIndex = twoPages && direction > 0 ? 1 : 0;
+    const opposite = 1 - turningIndex;
+    const underneath = [...visiblePages];
+    underneath[turningIndex] = incoming[turningIndex];
+    showLeaves(underneath);
+    putPage(front, visiblePages[turningIndex]);
+    putPage(back, twoPages ? incoming[opposite] : null);
+    sheet.dataset.direction = direction > 0 ? 'next' : 'previous';
+    sheet.hidden = false;
+    const angle = direction > 0 ? -180 : 180;
+    animation = sheet.animate([
+      { transform: 'rotateY(0deg)', opacity: 1 },
+      { transform: `rotateY(${angle / 2}deg)`, opacity: 1, offset: 0.5 },
+      { transform: `rotateY(${angle}deg)`, opacity: twoPages ? 1 : 0 },
+    ], { duration: 590, easing: 'cubic-bezier(.45,.08,.3,1)', fill: 'forwards' });
+    await animation.finished.catch(() => {});
+  }
+
+  async function drawPage(page = current, direction = 0) {
+    if (!pdfDocument || !leafRatio || disposed || frame.clientWidth === 0) return;
+    stopDraw();
     lastWidth = frame.clientWidth;
-    const draw = ++revision;
-    const pageNumber = current;
-    renderTask?.cancel();
+    const twoPages = lastWidth >= 560 && leafRatio <= 1.15 && pdfDocument.numPages > 1;
+    const start = spreadStart(page, twoPages);
+    const numbers = pageSlots(start, twoPages);
+    const columns = twoPages ? 2 : 1;
+    const maxWidth = 720 * leafRatio * columns;
+    const width = Math.min(lastWidth, maxWidth) / columns;
+    const job = { tasks: [] };
+    activeDraw = job;
+    book.setAttribute('aria-busy', 'true');
     try {
-      const page = await pdfDocument.getPage(pageNumber);
-      if (draw !== revision || disposed) return;
-      const original = page.getViewport({ scale: 1 });
-      const scale = Math.min(Math.max(lastWidth, 1) / original.width, 850 / original.height, 1.7);
-      const viewport = page.getViewport({ scale });
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      const surface = document.createElement('canvas');
-      surface.width = Math.max(1, Math.round(viewport.width * pixelRatio));
-      surface.height = Math.max(1, Math.round(viewport.height * pixelRatio));
-      renderTask = page.render({ canvas: surface, viewport, transform: [pixelRatio, 0, 0, pixelRatio, 0, 0] });
-      await renderTask.promise;
-      if (draw !== revision || disposed) return;
-      canvas.width = surface.width;
-      canvas.height = surface.height;
-      canvas.style.width = `${Math.round(viewport.width)}px`;
-      canvas.getContext('2d').drawImage(surface, 0, 0);
-      canvas.setAttribute('aria-label', `Página ${pageNumber} de ${entry.title}`);
-      canvas.hidden = false;
+      const incoming = await Promise.all(numbers.map(number => renderLeaf(number, width, job)));
+      if (job !== activeDraw) return;
+      if (direction && twoPages === spread && !book.hidden && !reducedMotion.matches) {
+        await flip(incoming, direction, twoPages);
+        if (job !== activeDraw) return;
+      }
+      current = start;
+      spread = twoPages;
+      animation?.cancel();
+      animation = null;
+      clearSheet();
+      visiblePages = incoming;
+      book.classList.toggle('is-spread', spread);
+      book.style.setProperty('--book-max-width', `${maxWidth}px`);
+      showLeaves(incoming);
+      book.hidden = false;
       status.hidden = true;
-      counter.textContent = `Página ${pageNumber} de ${pdfDocument.numPages}`;
+      const end = Math.max(...numbers);
+      counter.textContent = end > start ? `Páginas ${start}–${end} de ${pdfDocument.numPages}` : `Página ${start} de ${pdfDocument.numPages}`;
+      const focused = document.activeElement;
+      updateControls();
+      if ((focused === previous && previous.disabled) || (focused === next && next.disabled)) stage.focus({ preventScroll: true });
     } catch (error) {
-      if (draw !== revision || disposed || error.name === 'RenderingCancelledException') return;
-      canvas.hidden = true;
+      if (job !== activeDraw || error.name === 'RenderingCancelledException') return;
+      stopDraw();
       status.hidden = false;
-      setStatus(status, 'No pudimos mostrar esta página del PDF.', true);
-      counter.textContent = `Página ${pageNumber} de ${pdfDocument.numPages}`;
+      setStatus(status, 'No pudimos mostrar esta parte del PDF. Intenta de nuevo.', true);
+    } finally {
+      if (job === activeDraw || !activeDraw) {
+        activeDraw = null;
+        book.removeAttribute('aria-busy');
+      }
     }
   }
 
   function turn(direction) {
-    if (!pdfDocument) return;
-    const target = current + direction;
-    if (target < 1 || target > pdfDocument.numPages) return;
-    current = target;
-    const focused = document.activeElement;
-    updateControls();
-    if (focused === previous && previous.disabled || focused === next && next.disabled) stage.focus({ preventScroll: true });
-    drawPage();
+    if (!pdfDocument || book.hidden || activeDraw) return;
+    const step = spread && current >= (direction > 0 ? 2 : 4) ? 2 : 1;
+    const destination = current + step * direction;
+    if (destination < 1 || destination > pdfDocument.numPages) return;
+    drawPage(destination, direction);
   }
 
   previous.addEventListener('click', () => turn(-1));
@@ -138,6 +230,19 @@ function createReader(entry) {
     event.preventDefault();
     turn(event.key === 'ArrowLeft' ? -1 : 1);
   });
+  book.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    book.setPointerCapture(event.pointerId);
+  });
+  book.addEventListener('pointerup', event => {
+    if (gesture?.id !== event.pointerId) return;
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    gesture = null;
+    if (Math.abs(dx) >= 32 && Math.abs(dx) > Math.abs(dy) * 1.25) turn(dx < 0 ? 1 : -1);
+  });
+  book.addEventListener('lostpointercapture', () => { gesture = null; });
 
   function openPdf() {
     pdfReady ??= getPdfModule().then(({ getDocument }) => {
@@ -166,7 +271,10 @@ function createReader(entry) {
     try {
       pdfDocument = await openPdf();
       if (disposed) return;
-      updateControls();
+      const cover = (await pdfDocument.getPage(1)).getViewport({ scale: 1 });
+      if (disposed) return;
+      leafRatio = cover.width / cover.height;
+      book.style.setProperty('--leaf-ratio', String(leafRatio));
       drawPage();
       resizing.observe(frame);
     } catch (error) {
@@ -192,7 +300,7 @@ function createReader(entry) {
     disposed = true;
     visibility.disconnect();
     resizing.disconnect();
-    renderTask?.cancel();
+    stopDraw();
     loadingTask?.destroy().catch(() => {});
     element.remove();
   } };

@@ -47,10 +47,13 @@
         <h2></h2>
         <a class="pdf-link" target="_blank" rel="noopener">Abrir PDF</a>
       </header>
-      <div class="reader-stage" tabindex="0" role="group" aria-label="Lector de PDF. Usa las teclas de izquierda y derecha para cambiar de página.">
+      <div class="reader-stage" tabindex="0" role="group" aria-label="Libro digital. Desliza o usa las flechas del teclado para pasar la hoja.">
         <button class="turn previous" type="button" aria-label="Página anterior" disabled><span aria-hidden="true"></span></button>
         <div class="page-frame">
-          <canvas hidden></canvas>
+          <div class="book" hidden>
+            <div class="book-pages"><div class="book-page"></div><div class="book-page"></div></div>
+            <div class="book-turn" aria-hidden="true" hidden><div class="book-front"></div><div class="book-back"></div></div>
+          </div>
           <p class="page-status" role="status">Cargando PDF…</p>
         </div>
         <button class="turn next" type="button" aria-label="Página siguiente" disabled><span aria-hidden="true"></span></button>
