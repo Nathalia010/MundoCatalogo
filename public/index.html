@@ -14,19 +14,17 @@
     <div class="shell header-content d-flex flex-wrap align-items-center justify-content-between">
       <a href="/" class="brand d-flex align-items-center" aria-label="Inicio de Mundo Catálogo"><span class="brand-icon" aria-hidden="true"></span><span class="brand-name">Mundo <span>Catálogo</span></span></a>
       <div class="header-actions d-flex flex-wrap align-items-center justify-content-end">
-        <button id="session-button" class="btn button button-outline" type="button">Iniciar sesión</button>
+        <button id="session-button" class="btn button button-text is-guest" type="button">
+          <span class="session-icon" aria-hidden="true"></span><span id="session-label" class="visually-hidden">Iniciar sesión</span>
+        </button>
         <button id="logout" class="btn button button-text" type="button" hidden>Cerrar sesión</button>
       </div>
     </div>
   </header>
 
-  <main class="shell">
-    <section class="intro" aria-labelledby="heading">
-      <h1 id="heading">Catálogos</h1>
-      <p>Explora cada catálogo página a página.</p>
-    </section>
-
-    <section id="admin" class="admin" aria-labelledby="admin-heading" hidden>
+  <main>
+    <h1 class="visually-hidden">Mundo Catálogo</h1>
+    <section id="admin" class="shell admin" aria-labelledby="admin-heading" hidden>
       <div class="admin-header d-flex flex-wrap justify-content-between">
         <h2 id="admin-heading">Panel de catálogos</h2>
         <button id="add" class="btn button button-primary" type="button">Agregar PDF</button>
@@ -36,7 +34,7 @@
       <p id="admin-status" class="admin-status" role="status"></p>
     </section>
 
-    <div id="catalogs" class="d-grid" aria-label="Catálogos disponibles">
+    <div id="catalogs" class="shell d-grid" aria-label="Catálogos disponibles">
       <p class="initial-status" role="status">Cargando catálogos…</p>
     </div>
   </main>
@@ -57,8 +55,8 @@
           <p class="page-status" role="status">Cargando PDF…</p>
         </div>
         <button class="turn next" type="button" aria-label="Página siguiente" disabled><span aria-hidden="true"></span></button>
+        <div class="reader-footer"><span class="page-number" role="status" aria-live="polite"></span></div>
       </div>
-      <div class="reader-footer"><span class="page-number" role="status" aria-live="polite"></span></div>
     </article>
   </template>
 

@@ -4,6 +4,8 @@ const admin = $('#admin');
 const adminList = $('#admin-list');
 const adminStatus = $('#admin-status');
 const sessionButton = $('#session-button');
+const sessionLabel = $('#session-label');
+const mobileReader = matchMedia('(max-width: 767.98px)');
 const loginDialog = $('#login-dialog');
 const loginForm = $('#login-form');
 const uploadDialog = $('#upload-dialog');
@@ -58,6 +60,7 @@ function setStatus(element, message, error = false) {
 
 function createReader(entry) {
   const element = $('#reader-template').content.firstElementChild.cloneNode(true);
+  element.setAttribute('aria-label', entry.title);
   element.querySelector('h2').textContent = entry.title;
   const link = element.querySelector('.pdf-link');
   link.href = entry.url;
@@ -170,11 +173,11 @@ function createReader(entry) {
     if (!pdfDocument || !leafRatio || disposed || frame.clientWidth === 0) return;
     stopDraw();
     lastWidth = frame.clientWidth;
-    const twoPages = lastWidth >= 560 && leafRatio <= 1.15 && pdfDocument.numPages > 1;
+    const twoPages = !mobileReader.matches && lastWidth >= 560 && leafRatio <= 1.15 && pdfDocument.numPages > 1;
     const start = spreadStart(page, twoPages);
     const numbers = pageSlots(start, twoPages);
     const columns = twoPages ? 2 : 1;
-    const maxWidth = 720 * leafRatio * columns;
+    const maxWidth = mobileReader.matches ? lastWidth : 720 * leafRatio * columns;
     const width = Math.min(lastWidth, maxWidth) / columns;
     const job = { tasks: [] };
     activeDraw = job;
@@ -341,7 +344,9 @@ function renderAdmin() {
   finishDrag(false);
   admin.hidden = !signedIn;
   $('#logout').hidden = !signedIn;
-  sessionButton.textContent = signedIn ? 'Tenshi' : 'Iniciar sesión';
+  sessionButton.classList.toggle('is-guest', !signedIn);
+  sessionLabel.classList.toggle('visually-hidden', !signedIn);
+  sessionLabel.textContent = signedIn ? 'Tenshi' : 'Iniciar sesión';
   thumbnailObserver?.disconnect();
   adminList.replaceChildren();
   if (!signedIn) return;
