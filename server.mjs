@@ -1,16 +1,18 @@
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomBytes, randomUUID, scrypt as deriveKey, timingSafeEqual } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
-import { Worker } from 'node:worker_threads';
+import { openR2Storage } from './r2-storage.mjs';
+import { renderPdfCover } from './cover.mjs';
 
 const scrypt = promisify(deriveKey);
 const storage = resolve(process.env.DATA_DIR || 'data');
 const files = join(storage, 'pdf');
 const indexFile = join(storage, 'catalogos.json');
+const r2 = openR2Storage();
 const maxPdfSize = 100_000_000;
 const sessionDuration = 8 * 60 * 60 * 1000;
 const attemptWindow = 15 * 60 * 1000;
@@ -23,39 +25,49 @@ if (!expectedHash) throw new Error('Configura ADMIN_PASSWORD_HASH en .env. Consu
 
 await mkdir(files, { recursive: true });
 let catalogs;
-try {
-  catalogs = JSON.parse(await readFile(indexFile, 'utf8'));
-} catch (error) {
-  if (error.code !== 'ENOENT') throw error;
-  catalogs = [];
+if (r2) catalogs = (await r2.readIndex()).entries;
+else {
+  try {
+    catalogs = JSON.parse(await readFile(indexFile, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    catalogs = [];
+  }
 }
 
-const availableCovers = new Set((await readdir(files)).filter(name => name.endsWith('.webp')).map(name => name.slice(0, -5)));
+const availableCovers = new Set(r2 ? await r2.coverKeys() : (await readdir(files)).filter(name => name.endsWith('.webp')).map(name => name.slice(0, -5)));
 let pendingCover = Promise.resolve();
 
-function renderCover(path) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./cover.mjs', import.meta.url), { workerData: path });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', code => reject(new Error(`La portada no está disponible (código ${code}).`)));
-  });
+const objectKey = (key, extension) => `pdf/${key}.${extension}`;
+
+function removeStoredFile(key, extension) {
+  return r2 ? r2.remove(objectKey(key, extension)) : unlink(join(files, `${key}.${extension}`));
 }
 
 function queueCover(key) {
   pendingCover = pendingCover.then(async () => {
     if (availableCovers.has(key) || !catalogs.some(entry => entry.key === key)) return;
     const temp = join(files, `${key}.cover`);
+    const source = join(files, r2 ? `${key}.cover-source` : `${key}.pdf`);
     try {
-      const data = await renderCover(join(files, `${key}.pdf`));
+      if (r2) {
+        const { Body } = await r2.get(objectKey(key, 'pdf'));
+        await pipeline(Body, createWriteStream(source));
+      }
+      const data = await renderPdfCover(source);
       if (!catalogs.some(entry => entry.key === key)) return;
-      await writeFile(temp, data);
-      await rename(temp, join(files, `${key}.webp`));
+      if (r2) await r2.putCover(objectKey(key, 'webp'), data);
+      else {
+        await writeFile(temp, data);
+        await rename(temp, join(files, `${key}.webp`));
+      }
       if (catalogs.some(entry => entry.key === key)) availableCovers.add(key);
-      else await unlink(join(files, `${key}.webp`)).catch(() => {});
+      else await removeStoredFile(key, 'webp').catch(() => {});
     } catch (error) {
       console.warn(`No se pudo generar una portada: ${error.message}`);
       await unlink(temp).catch(() => {});
+    } finally {
+      if (r2) await unlink(source).catch(() => {});
     }
   });
 }
@@ -69,23 +81,48 @@ setInterval(() => {
 }, 60_000).unref();
 
 let pendingUpdate = Promise.resolve();
-function updateCatalogs(change) {
-  const next = pendingUpdate.then(async () => {
-    const { entries, added, removed } = change(catalogs);
-    const temp = join(storage, `${randomUUID()}.tmp`);
+
+async function persistCatalogs(entries, added, etag) {
+  if (r2) {
+    if (added) await r2.putFile(objectKey(added.key, 'pdf'), added.stagedPath);
+    // A timeout can happen after R2 has written the index. Keep the new PDF on error.
     try {
-      if (added) await rename(added.stagedPath, join(files, `${added.key}.pdf`));
-      await writeFile(temp, JSON.stringify(entries, null, 2), { flag: 'wx' });
-      await rename(temp, indexFile);
+      await r2.writeIndex(entries, etag);
     } catch (error) {
-      await unlink(temp).catch(() => {});
-      if (added) await unlink(join(files, `${added.key}.pdf`)).catch(() => {});
+      if (error.$metadata?.httpStatusCode === 412) {
+        catalogs = (await r2.readIndex()).entries;
+        if (added && !catalogs.some(entry => entry.key === added.key)) await removeStoredFile(added.key, 'pdf').catch(() => {});
+        throw new HttpError(409, 'La lista cambió. Actualiza la página y vuelve a intentarlo.');
+      }
       throw error;
     }
+    return;
+  }
+
+  const temp = join(storage, `${randomUUID()}.tmp`);
+  try {
+    if (added) await rename(added.stagedPath, join(files, `${added.key}.pdf`));
+    await writeFile(temp, JSON.stringify(entries, null, 2), { flag: 'wx' });
+    await rename(temp, indexFile);
+  } catch (error) {
+    await unlink(temp).catch(() => {});
+    if (added) await removeStoredFile(added.key, 'pdf').catch(() => {});
+    throw error;
+  }
+}
+
+function updateCatalogs(change) {
+  const next = pendingUpdate.then(async () => {
+    const snapshot = r2 ? await r2.readIndex() : null;
+    if (snapshot) catalogs = snapshot.entries;
+    const { entries, added, removed } = change(catalogs);
+    await persistCatalogs(entries, added, snapshot?.etag);
     catalogs = entries;
     if (removed) {
       availableCovers.delete(removed.key);
-      await Promise.all(['pdf', 'webp'].map(extension => unlink(join(files, `${removed.key}.${extension}`)).catch(() => {})));
+      await Promise.all(['pdf', 'webp'].map(extension => removeStoredFile(removed.key, extension).catch(error => {
+        if (r2) console.warn(`R2 no pudo limpiar un archivo retirado: ${error.message}`);
+      })));
     }
     if (added) queueCover(added.key);
     return entries;
@@ -191,6 +228,37 @@ async function streamFile(req, res, path, type, pdf = false, cacheControl = 'no-
   else await pipeline(createReadStream(path, { start, end }), res);
 }
 
+async function streamCatalogFile(req, res, key, extension) {
+  const pdf = extension === 'pdf';
+  const type = pdf ? 'application/pdf' : 'image/webp';
+  const cacheControl = pdf ? 'no-cache' : 'public, max-age=86400';
+  if (!r2) return streamFile(req, res, join(files, `${key}.${extension}`), type, pdf, cacheControl);
+
+  const name = objectKey(key, extension);
+  const headers = { 'Content-Type': type, 'Cache-Control': cacheControl };
+  if (pdf) headers['Accept-Ranges'] = 'bytes';
+  const range = pdf ? req.headers.range : undefined;
+  const headOnly = req.method === 'HEAD';
+  try {
+    const result = headOnly ? await r2.head(name) : await r2.get(name, range);
+    headers['Content-Length'] = result.ContentLength;
+    if (result.ContentRange) headers['Content-Range'] = result.ContentRange;
+    res.writeHead(result.ContentRange ? 206 : 200, headers);
+    if (headOnly) res.end();
+    else await pipeline(result.Body, res);
+  } catch (error) {
+    const status = error.$metadata?.httpStatusCode;
+    if (status === 404) throw new HttpError(404, 'Archivo no disponible.');
+    if (status === 416) {
+      const { ContentLength } = await r2.head(name);
+      res.writeHead(416, { 'Content-Range': `bytes */${ContentLength}` });
+      res.end();
+      return;
+    }
+    throw error;
+  }
+}
+
 function publicEntries(entries) {
   return entries.map(({ id, title, key }) => ({
     id, title, url: `/catalogos/${key}.pdf`,
@@ -213,11 +281,11 @@ async function handle(req, res) {
   }
   const pdf = /^\/catalogos\/([a-f0-9-]{36})\.pdf$/.exec(pathname);
   if (isRead && pdf && catalogs.some(entry => entry.key === pdf[1])) {
-    return streamFile(req, res, join(files, `${pdf[1]}.pdf`), 'application/pdf', true);
+    return streamCatalogFile(req, res, pdf[1], 'pdf');
   }
   const cover = /^\/catalogos\/([a-f0-9-]{36})\.webp$/.exec(pathname);
   if (isRead && cover && availableCovers.has(cover[1]) && catalogs.some(entry => entry.key === cover[1])) {
-    return streamFile(req, res, join(files, `${cover[1]}.webp`), 'image/webp', false, 'public, max-age=86400');
+    return streamCatalogFile(req, res, cover[1], 'webp');
   }
   if (method === 'GET' && pathname === '/api/session') return sendJson(res, 200, { signedIn });
   if (method === 'GET' && pathname === '/api/catalogos') return sendJson(res, 200, publicEntries(catalogs));
@@ -323,6 +391,6 @@ createServer((req, res) => {
     sendJson(res, status, { error: error.status ? error.message : status === 404 ? 'Archivo no disponible.' : 'Ocurrió un error. Vuelve a intentarlo.' });
   });
 }).listen(port, host, () => {
-  console.log(`Mundo Catálogo · http://${host}:${port}`);
+  console.log(`Mundo Catálogo · http://${host}:${port} · ${r2 ? 'Cloudflare R2' : 'archivos locales'}`);
   catalogs.forEach(({ key }) => queueCover(key));
 });

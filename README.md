@@ -28,3 +28,17 @@ try {
 ```
 
 Pega el resultado en `ADMIN_PASSWORD_HASH` y reinicia el servidor. Guarda una copia de la carpeta `data/` para respaldar los PDF y su orden. Para publicar, usa un servidor Node.js con almacenamiento persistente y HTTPS, configura `DATA_DIR` y activa `SECURE_COOKIE=1`. Usa una contraseña nueva para el acceso público.
+
+## Guardar los catálogos en Cloudflare R2
+
+1. En Cloudflare, crea el bucket privado `mundo-catalogo` con clase **Standard**. Crea una clave **Object Read & Write** limitada a ese bucket. El sitio accede a R2 desde el servidor. [Configuración de R2 para S3](https://developers.cloudflare.com/r2/get-started/s3/)
+2. Completa las cuatro variables de R2 en `.env.r2`. Usa el **S3 API endpoint** para `R2_ENDPOINT`, el nombre del bucket para `R2_BUCKET` y los valores **Access Key ID** y **Secret Access Key** para las otras dos variables. Mantén el archivo fuera de Git.
+3. Antes de activar R2 en Render, importa el respaldo. El comando usa `data/r2-backup/index.json` por defecto. También puedes pasar la ruta a otro respaldo o al `catalogos.json` de una instalación local.
+
+   ```powershell
+   npm run migrate:r2
+   ```
+
+4. Cuando la migración confirme todos los PDF, agrega las mismas cuatro variables en **Environment** del servicio MundoCatalogo en Render y elige **Save only**. Despliega esta versión del código y comprueba que el enlace público muestre los catálogos en el orden esperado. [Variables de entorno en Render](https://render.com/docs/configure-environment-variables)
+
+Con R2 configurado, los archivos locales se usan como espacio temporal. Los PDF, las portadas y el orden se guardan en el bucket. R2 Standard incluye una cuota mensual gratuita. Cloudflare puede cobrar por uso que exceda esa cuota. [Precios de R2](https://developers.cloudflare.com/r2/pricing/)

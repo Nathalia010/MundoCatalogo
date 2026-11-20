@@ -1,3 +1,4 @@
 node_modules/
 .env
+.env.r2
 data/

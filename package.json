@@ -8,9 +8,11 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env server.mjs",
-    "dev": "node --watch --env-file-if-exists=.env server.mjs"
+    "dev": "node --watch --env-file-if-exists=.env server.mjs",
+    "migrate:r2": "node --env-file-if-exists=.env.r2 scripts/migrate-r2.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1172.0",
     "bootstrap": "5.3",
     "pdfjs-dist": "^6.5.438"
   }

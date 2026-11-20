@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { parentPort, workerData } from 'node:worker_threads';
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
 const assets = resolve('node_modules/pdfjs-dist');
 
@@ -29,4 +29,13 @@ async function renderCover(path) {
   }
 }
 
-parentPort.postMessage(await renderCover(workerData));
+export function renderPdfCover(path) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(import.meta.url), { workerData: path });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', code => reject(new Error(`La portada no está disponible (código ${code}).`)));
+  });
+}
+
+if (!isMainThread) parentPort.postMessage(await renderCover(workerData));
